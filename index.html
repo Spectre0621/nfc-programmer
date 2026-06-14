@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NFC Batch Programmer</title>
+    <style>
+        body {
+            background-color: #2b2b2b;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-top: 40px;
+            margin: 0;
+        }
+        h1 { margin-bottom: 5px; }
+        .status-text { color: #bdc3c7; font-size: 14px; margin-bottom: 25px; height: 20px;}
+        
+        button {
+            border: none;
+            border-radius: 6px;
+            padding: 12px 20px;
+            font-size: 14px;
+            font-weight: bold;
+            color: white;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        button:disabled {
+            background-color: #3a3a3a !important;
+            color: #7f8c8d !important;
+            cursor: not-allowed;
+        }
+        
+        #connectBtn { background-color: #8e44ad; width: 220px; font-size: 16px; margin-bottom: 5px;}
+        #connectBtn:hover:not(:disabled) { background-color: #732d91; }
+        
+        input[type="text"] {
+            background-color: #1e1e1e;
+            border: 1px solid #555;
+            color: white;
+            padding: 12px;
+            width: 350px;
+            border-radius: 6px;
+            font-size: 14px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        input[type="text"]:focus { outline: none; border-color: #3498db; }
+
+        .btn-group {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        
+        #writeBtn { background-color: #27ae60; }
+        #writeBtn:hover:not(:disabled) { background-color: #219653; }
+        
+        #readBtn { background-color: #2980b9; }
+        #readBtn:hover:not(:disabled) { background-color: #2471a3; }
+        
+        #wipeBtn { background-color: #c0392b; }
+        #wipeBtn:hover:not(:disabled) { background-color: #a93226; }
+
+        #feedback { font-size: 16px; font-weight: bold; text-align: center; max-width: 450px; height: 50px;}
+    </style>
+</head>
+<body>
+
+    <h1>NFC Batch Programmer</h1>
+    <button id="connectBtn">🔌 Connect Reader</button>
+    <div id="status" class="status-text">Waiting for connection...</div>
+
+    <div style="font-size: 13px; margin-bottom: 8px;">Paste Link Here (For Writing):</div>
+    <input type="text" id="urlInput" placeholder="https://...">
+
+    <div class="btn-group">
+        <button id="writeBtn" disabled>📝 Write Link</button>
+        <button id="readBtn" disabled>🔍 Read Card</button>
+        <button id="wipeBtn" disabled>❌ Wipe Card</button>
+    </div>
+
+    <div id="feedback"></div>
+
+    <script>
+        let port;
+        let writer;
+        let reader;
+        let keepReading = true;
+
+        const connectBtn = document.getElementById('connectBtn');
+        const statusText = document.getElementById('status');
+        const feedbackText = document.getElementById('feedback');
+        const urlInput = document.getElementById('urlInput');
+        const actionBtns = [document.getElementById('writeBtn'), document.getElementById('readBtn'), document.getElementById('wipeBtn')];
+
+        async function connect() {
+            try {
+                // Ask the user to select the Arduino
+                port = await navigator.serial.requestPort();
+                
+                connectBtn.disabled = true;
+                connectBtn.innerText = "🟡 Connecting...";
+                connectBtn.style.backgroundColor = "#f39c12";
+                
+                await port.open({ baudRate: 115200 });
+
+                // Set up the data streams
+                const textEncoder = new TextEncoderStream();
+                textEncoder.readable.pipeTo(port.writable);
+                writer = textEncoder.writable.getWriter();
+
+                // Arduino Hardware Reboot Bypass (Wait 3 seconds)
+                statusText.innerText = "🟡 Rebooting hardware...";
+                statusText.style.color = "#f39c12";
+
+                setTimeout(() => {
+                    statusText.innerText = "🟢 Connected";
+                    statusText.style.color = "#2ecc71";
+                    connectBtn.innerText = "✅ Connected";
+                    connectBtn.style.backgroundColor = "#2ecc71";
+                    actionBtns.forEach(btn => btn.disabled = false);
+                    feedbackText.innerText = "Ready.";
+                    
+                    keepReading = true;
+                    readLoop();
+                }, 3000);
+
+            } catch (error) {
+                console.error("Connection error:", error);
+                statusText.innerText = "🔴 Error connecting. Try again.";
+                statusText.style.color = "#e74c3c";
+                connectBtn.disabled = false;
+                connectBtn.innerText = "🔌 Connect Reader";
+                connectBtn.style.backgroundColor = "#8e44ad";
+            }
+        }
+
+        async function readLoop() {
+            const textDecoder = new TextDecoderStream();
+            port.readable.pipeTo(textDecoder.writable);
+            reader = textDecoder.readable.getReader();
+            let buffer = '';
+
+            try {
+                while (keepReading) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += value;
+                    let lines = buffer.split('\n');
+                    buffer = lines.pop(); // Keep the last incomplete line in the buffer
+
+                    for (let line of lines) {
+                        line = line.trim();
+                        if (line.startsWith("STATUS:")) {
+                            let msg = line.substring(7);
+                            feedbackText.innerText = msg;
+                            if (msg.includes("Wrote link")) feedbackText.style.color = "#2ecc71";
+                            else if (msg.includes("wiped clean")) feedbackText.style.color = "#e74c3c";
+                            else feedbackText.style.color = "#ffffff";
+                        } 
+                        else if (line.startsWith("READ_DATA:")) {
+                            let data = line.substring(10).trim();
+                            if (!data || data.toLowerCase().includes("blank")) {
+                                feedbackText.innerText = "Card is empty (No data found).";
+                                feedbackText.style.color = "#e67e22";
+                            } else {
+                                feedbackText.innerText = "Card Data: " + data;
+                                feedbackText.style.color = "#3498db";
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error("Read error or disconnect:", error);
+                handleDisconnect();
+            } finally {
+                reader.releaseLock();
+            }
+        }
+
+        function handleDisconnect() {
+            keepReading = false;
+            actionBtns.forEach(btn => btn.disabled = true);
+            statusText.innerText = "🔴 Device unplugged. Please reconnect.";
+            statusText.style.color = "#e74c3c";
+            connectBtn.disabled = false;
+            connectBtn.innerText = "🔌 Connect Reader";
+            connectBtn.style.backgroundColor = "#8e44ad";
+            if (port) { port.close().catch(e => console.log(e)); }
+        }
+
+        async function sendCommand(cmd) {
+            if (writer) {
+                await writer.write(cmd + '\n');
+            }
+        }
+
+        connectBtn.addEventListener('click', connect);
+
+        document.getElementById('writeBtn').addEventListener('click', () => {
+            const url = urlInput.value.trim();
+            if (!url) { alert("Please paste a link first."); return; }
+            sendCommand("MODE:WRITE|" + url);
+            feedbackText.innerText = "Write Mode Active: Continuously tap cards.";
+            feedbackText.style.color = "#2ecc71";
+            urlInput.value = "";
+        });
+
+        document.getElementById('readBtn').addEventListener('click', () => {
+            sendCommand("MODE:READ");
+            feedbackText.innerText = "Read Mode Active: Tap any card to read it.";
+            feedbackText.style.color = "#3498db";
+        });
+
+        document.getElementById('wipeBtn').addEventListener('click', () => {
+            sendCommand("MODE:WIPE");
+            feedbackText.innerText = "Wipe Mode Active: Tap cards to erase them.";
+            feedbackText.style.color = "#e74c3c";
+        });
+    </script>
+</body>
+</html>
